@@ -66,6 +66,15 @@ type ClientOption func(tb testing.TB, c *clientConfig)
 
 // --- Server Options ---
 
+func WithNOOPWorkload() ServerOption {
+	return func(tb testing.TB, c *serverConfig) {
+		factory := &benchviews.NoopViewFactory{}
+		v, err := factory.NewView(nil)
+		require.NoError(tb, err)
+		c.workload = v
+	}
+}
+
 func WithCPUWorkload(n int) ServerOption {
 	return func(tb testing.TB, c *serverConfig) {
 		params := &benchviews.CPUParams{N: n}
@@ -128,7 +137,45 @@ func WithClientECDSASigner(certPath, keyPath string) ClientOption {
 		c.signer = signer
 	}
 }
+// --- NOOP Workload Benchmarks ---
+func BenchmarkGRPCSingleConnectionNOOP(b *testing.B) {
+	srvEndpoint := setupServer(b, WithServerMockSigner("default-server-id"), WithNOOPWorkload())
+	b.ResetTimer()
 
+	// we share a single connection among all client goroutines
+	cli, closeF := setupClient(b, srvEndpoint, WithClientMockSigner("default-client-id"))
+	defer closeF()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			resp, err := cli.CallViewWithContext(b.Context(), "fid", nil)
+			require.NoError(b, err)
+			require.NotNil(b, resp)
+		}
+	})
+	benchmark.ReportTPS(b)
+}
+
+func BenchmarkGRPCMultiConnectionNOOP(b *testing.B) {
+	srvEndpoint := setupServer(b, WithServerMockSigner("default-server-id"), WithNOOPWorkload())
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		// each goroutine gets its own client + connection
+		cli, closeF := setupClient(b, srvEndpoint, WithClientMockSigner("default-client-id"))
+		defer closeF()
+
+		for pb.Next() {
+			resp, err := cli.CallViewWithContext(b.Context(), "fid", nil)
+			require.NoError(b, err)
+			require.NotNil(b, resp)
+		}
+	})
+
+	benchmark.ReportTPS(b)
+}
+
+// --- CPU Workload Benchmarks ---
 func BenchmarkGRPCSingleConnectionCPU(b *testing.B) {
 	srvEndpoint := setupServer(b, WithServerMockSigner("default-server-id"), WithCPUWorkload(200000))
 	b.ResetTimer()
